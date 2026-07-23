@@ -273,7 +273,7 @@ class GatewayServer {
             </button>
           </div>
 
-          <div class="bg-[#10121d] border border-slate-900/60 p-4 rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-3 hover:bg-[#121524] transition">
+          <div class="bg-[#10121d] border border-slate-900/60 p-4 rounded-lg flex items-center justify-between hover:bg-[#121524] transition">
             <div>
               <span class="text-xs bg-pink-500/10 text-pink-400 px-2 py-0.5 rounded font-bold border border-pink-500/20">GLOBAL CLUSTER</span>
               <p class="text-sm font-semibold text-slate-200 mt-2">${protocolWs}://${currentHost}/ALL</p>
@@ -964,25 +964,62 @@ class GatewayServer {
     } catch(e) { await retry(); }
   }
 
+  // ==================== FIX NATIVE UDP OUTBOUND ====================
   async handleUDPOutbound(targetAddress, targetPort, dataChunk, webSocket, responseHeader, log) {
     return new Promise((resolve) => {
       try {
-        let header = responseHeader;
         const key = `${targetAddress}:${targetPort}:${Date.now()}`;
         const sock = dgram.createSocket('udp4');
         this.activeUDPConnections.set(key, { socket: sock, webSocket });
-        sock.on('error', (e) => { try{sock.close()}catch(_){} this.activeUDPConnections.delete(key); });
-        sock.send(dataChunk, targetPort, targetAddress, (e) => { if(e){ try{sock.close()}catch(_){} this.activeUDPConnections.delete(key); } });
+        
+        sock.on('error', (e) => { 
+          try { sock.close() } catch(_){} 
+          this.activeUDPConnections.delete(key); 
+        });
+
+        sock.send(dataChunk, targetPort, targetAddress, (e) => { 
+          if(e) { 
+            try { sock.close() } catch(_){} 
+            this.activeUDPConnections.delete(key); 
+          } 
+        });
+
         sock.on('message', (msg) => {
           if (webSocket.readyState === WebSocket.OPEN) {
-            if (header) { webSocket.send(Buffer.concat([Buffer.from(header), msg])); header = null; }
-            else webSocket.send(msg);
+            // --- FIX PACKET ENCAPSULATION FOR VLESS/TROJAN NATIVE UDP ---
+            // Setiap data kembalian UDP wajib dibungkus dengan ukuran panjang data (2 byte length)
+            const msgLength = msg.length;
+            const lengthBuffer = Buffer.alloc(2);
+            lengthBuffer.writeUInt16BE(msgLength, 0);
+
+            if (responseHeader) { 
+              // Paket pertama menyertakan response header + length + data
+              webSocket.send(Buffer.concat([Buffer.from(responseHeader), lengthBuffer, msg])); 
+              responseHeader = null; 
+            } else {
+              // Paket berikutnya wajib menyertakan length + data agar DarkTunnel tidak kebingungan
+              webSocket.send(Buffer.concat([lengthBuffer, msg]));
+            }
           }
         });
+
         sock.on('close', () => this.activeUDPConnections.delete(key));
-        let t = setTimeout(() => { try{sock.close()}catch(_){} this.activeUDPConnections.delete(key); }, 30000);
-        sock.on('message', () => { clearTimeout(t); t = setTimeout(() => { try{sock.close()}catch(_){} this.activeUDPConnections.delete(key); }, 30000); });
-      } catch(e) { console.error(`UDP error: ${e.message}`); }
+        
+        let t = setTimeout(() => { 
+          try { sock.close() } catch(_){} 
+          this.activeUDPConnections.delete(key); 
+        }, 30000);
+
+        sock.on('message', () => { 
+          clearTimeout(t); 
+          t = setTimeout(() => { 
+            try { sock.close() } catch(_){} 
+            this.activeUDPConnections.delete(key); 
+          }, 30000); 
+        });
+      } catch(e) { 
+        console.error(`UDP error: ${e.message}`); 
+      }
     });
   }
 
@@ -1007,7 +1044,7 @@ class GatewayServer {
   readFlashHeader(buf) {
     const v = buf[0]; let udp = false;
     const ol = buf[17]; const cmd = buf[18+ol];
-    // --- FIX UTAMA VMESS: Gunakan status perintah cmd asli ---
+    // --- FIX DETEKSI VMESS: Ambil status perintah cmd asli ---
     if (cmd === 2) udp = true; else if (cmd !== 1) return { hasError: true, message: `Cmd ${cmd} unsupported` };
     const pi = 18+ol+1; const pr = buf.readUInt16BE(pi);
     let ai = pi+2; const at = buf[ai]; let al = 0, avi = ai+1, av = "";
@@ -1016,7 +1053,7 @@ class GatewayServer {
     else if (at === 3) { al = 16; const ip = []; for(let i=0;i<8;i++) ip.push(buf.readUInt16BE(avi+i*2).toString(16)); av = ip.join(":"); }
     else return { hasError: true, message: `Invalid addr type: ${at}` };
     if (!av) return { hasError: true, message: "Address empty" };
-    // --- FIX KUNCI: Output isUDP didasarkan pada tipe protokol asli ---
+    // --- FIX KUNCI: Output isUDP disesuaikan dengan tipe request asli (Bukan kunci port 53) ---
     return { hasError: false, addressRemote: av, portRemote: pr, rawDataIndex: avi+al, rawClientData: buf.slice(avi+al), version: Buffer.from([v,0]), isUDP: udp };
   }
 
@@ -1025,7 +1062,7 @@ class GatewayServer {
     if (db.length < 6) return { hasError: true, message: "Invalid data" };
     let udp = false;
     const cmd = db[0];
-    // --- FIX UTAMA TROJAN/VLESS: Gunakan status perintah cmd asli ---
+    // --- FIX DETEKSI TROJAN/VLESS: Ambil status perintah cmd asli ---
     if (cmd == 3) udp = true; else if (cmd != 1) throw new Error("Unsupported cmd");
     let at = db[1]; let al = 0, avi = 2, av = "";
     if (at === 1) { al = 4; av = Array.from(db.slice(avi, avi+al)).join("."); }
@@ -1035,7 +1072,7 @@ class GatewayServer {
     if (!av) return { hasError: true, message: "Address empty" };
     const pi = avi + al;
     const pr = db.readUInt16BE(pi);
-    // --- FIX KUNCI: Output isUDP didasarkan pada tipe protokol asli ---
+    // --- FIX KUNCI: Output isUDP disesuaikan dengan tipe request asli (Bukan kunci port 53) ---
     return { hasError: false, addressRemote: av, portRemote: pr, rawDataIndex: pi+4, rawClientData: db.slice(pi+4), version: null, isUDP: udp };
   }
 
