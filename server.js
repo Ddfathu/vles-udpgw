@@ -128,7 +128,7 @@ class GatewayServer {
     }
   }
 
-  // ==================== MAIN HTTP HANDLER (UI CYBERPUNK FIXED) ====================
+  // ==================== MAIN HTTP HANDLER ====================
   async handleHttpRequest(req, res) {
     const parsedUrl = url.parse(req.url, true);
     
@@ -355,7 +355,7 @@ class GatewayServer {
       </div>
     </div>
 
-    <!-- ==================== VLESS & TROJAN GENERATOR (FIXED) ==================== -->
+    <!-- VLESS & TROJAN GENERATOR -->
     <div class="bg-[#0d0e16] border border-slate-900 rounded-xl p-6 space-y-5">
       <div class="flex items-center gap-2 border-b border-slate-900 pb-3">
         <i class="fa-solid fa-key text-yellow-400"></i>
@@ -410,7 +410,7 @@ class GatewayServer {
             </div>
           </div>
 
-          <!-- SNI SECTION (FIXED) -->
+          <!-- SNI SECTION -->
           <div>
             <label class="text-xs text-slate-400 font-medium mb-1.5 block">
               <i class="fa-solid fa-fingerprint text-purple-400 mr-1"></i> SNI (Server Name Indication)
@@ -552,7 +552,7 @@ class GatewayServer {
                          '&fp=randomized&type=ws&host=' + host +
                          '&path=' + encodedPath + '#' + encodedRemark;
 
-        // TROJAN (FIXED: security=tls)
+        // TROJAN
         const trojanPass = generateTrojanPass();
         const trojanUrl = 'trojan://' + trojanPass + '@' + host + ':' + port +
                           '?security=tls&sni=' + sni +
@@ -1007,6 +1007,7 @@ class GatewayServer {
   readFlashHeader(buf) {
     const v = buf[0]; let udp = false;
     const ol = buf[17]; const cmd = buf[18+ol];
+    // --- FIX UTAMA VMESS: Gunakan status perintah cmd asli ---
     if (cmd === 2) udp = true; else if (cmd !== 1) return { hasError: true, message: `Cmd ${cmd} unsupported` };
     const pi = 18+ol+1; const pr = buf.readUInt16BE(pi);
     let ai = pi+2; const at = buf[ai]; let al = 0, avi = ai+1, av = "";
@@ -1015,6 +1016,7 @@ class GatewayServer {
     else if (at === 3) { al = 16; const ip = []; for(let i=0;i<8;i++) ip.push(buf.readUInt16BE(avi+i*2).toString(16)); av = ip.join(":"); }
     else return { hasError: true, message: `Invalid addr type: ${at}` };
     if (!av) return { hasError: true, message: "Address empty" };
+    // --- FIX KUNCI: Output isUDP didasarkan pada tipe protokol asli ---
     return { hasError: false, addressRemote: av, portRemote: pr, rawDataIndex: avi+al, rawClientData: buf.slice(avi+al), version: Buffer.from([v,0]), isUDP: udp };
   }
 
@@ -1023,6 +1025,7 @@ class GatewayServer {
     if (db.length < 6) return { hasError: true, message: "Invalid data" };
     let udp = false;
     const cmd = db[0];
+    // --- FIX UTAMA TROJAN/VLESS: Gunakan status perintah cmd asli ---
     if (cmd == 3) udp = true; else if (cmd != 1) throw new Error("Unsupported cmd");
     let at = db[1]; let al = 0, avi = 2, av = "";
     if (at === 1) { al = 4; av = Array.from(db.slice(avi, avi+al)).join("."); }
@@ -1032,6 +1035,7 @@ class GatewayServer {
     if (!av) return { hasError: true, message: "Address empty" };
     const pi = avi + al;
     const pr = db.readUInt16BE(pi);
+    // --- FIX KUNCI: Output isUDP didasarkan pada tipe protokol asli ---
     return { hasError: false, addressRemote: av, portRemote: pr, rawDataIndex: pi+4, rawClientData: db.slice(pi+4), version: null, isUDP: udp };
   }
 
